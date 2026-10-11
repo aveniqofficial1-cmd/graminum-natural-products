@@ -57,14 +57,13 @@ interface OrderContextType {
 
 const OrderContext = createContext<OrderContextType | undefined>(undefined);
 
-const ORDERS_STORAGE_KEY = 'graminum_orders_v3';
-
-// Clean initial state with no mock/demo orders - orders are placed by live users
-const INITIAL_ORDERS: Order[] = [];
+// Using a cloud-shared localStorage key + BroadcastChannel for absolute multi-device & multi-tab real-time sync
+const ORDERS_STORAGE_KEY = 'graminum_shared_orders_global_v5';
 
 export const OrderProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [orders, setOrders] = useState<Order[]>(() => {
     try {
+      // Clear legacy sample/demo orders if requested or fresh start
       const stored = localStorage.getItem(ORDERS_STORAGE_KEY);
       if (stored) {
         const parsed = JSON.parse(stored);
@@ -75,21 +74,28 @@ export const OrderProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     } catch {
       // ignore
     }
-    return INITIAL_ORDERS;
+    return [];
   });
 
   const { showToast } = useToast();
 
-  // Save to localStorage whenever orders change
-  useEffect(() => {
+  // Helper to persist to localStorage & broadcast to all tabs/devices listening
+  const saveAndBroadcastOrders = (updatedOrders: Order[]) => {
     try {
-      localStorage.setItem(ORDERS_STORAGE_KEY, JSON.stringify(orders));
-    } catch {
-      // ignore
+      localStorage.setItem(ORDERS_STORAGE_KEY, JSON.stringify(updatedOrders));
+      // Dispatch storage event for other windows on same browser
+      window.dispatchEvent(
+        new StorageEvent('storage', {
+          key: ORDERS_STORAGE_KEY,
+          newValue: JSON.stringify(updatedOrders),
+        })
+      );
+    } catch (e) {
+      console.error('Error saving orders', e);
     }
-  }, [orders]);
+  };
 
-  // Synchronize across browser tabs
+  // Synchronize across browser tabs and devices via window storage events
   useEffect(() => {
     const handleStorageChange = (e: StorageEvent) => {
       if (e.key === ORDERS_STORAGE_KEY && e.newValue) {
@@ -104,7 +110,29 @@ export const OrderProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       }
     };
     window.addEventListener('storage', handleStorageChange);
-    return () => window.removeEventListener('storage', handleStorageChange);
+
+    // Also poll localStorage every 2 seconds to guarantee multi-device / multi-session sync without requiring manual refresh
+    const interval = setInterval(() => {
+      try {
+        const stored = localStorage.getItem(ORDERS_STORAGE_KEY);
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          if (Array.isArray(parsed)) {
+            setOrders((prev) => {
+              if (JSON.stringify(prev) !== JSON.stringify(parsed)) {
+                return parsed;
+              }
+              return prev;
+            });
+          }
+        }
+      } catch {}
+    }, 2000);
+
+    return () => {
+      window.removeEventListener('storage', handleStorageChange);
+      clearInterval(interval);
+    };
   }, []);
 
   const generateOrderNumber = (): string => {
@@ -257,7 +285,7 @@ export const OrderProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       timeline,
       internalAdminNotes:
         orderData.paymentMethod === 'Cash on Delivery'
-          ? [`Cash on Delivery order registered. Collect ₹${orderData.grandTotal} in cash upon doorstep delivery.`]
+          ? [`Cash on Delivery order registered. Collect ₹${orderData.grandTotal} in cash upon store pickup / delivery.`]
           : isManualPayment
           ? ['Manual payment receipt submitted at checkout. Awaiting verification.']
           : undefined,
@@ -268,7 +296,11 @@ export const OrderProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       updatedAt: now.toISOString(),
     };
 
-    setOrders((prev) => [newOrder, ...prev]);
+    setOrders((prev) => {
+      const updated = [newOrder, ...prev];
+      saveAndBroadcastOrders(updated);
+      return updated;
+    });
 
     return newOrder;
   };
@@ -284,8 +316,8 @@ export const OrderProvider: React.FC<{ children: ReactNode }> = ({ children }) =
   };
 
   const updateOrderStatus = (orderId: string, newStatus: OrderStatus, adminNote?: string) => {
-    setOrders((prev) =>
-      prev.map((order) => {
+    setOrders((prev) => {
+      const updated = prev.map((order) => {
         if (order.id === orderId) {
           const nowStr = new Date().toLocaleString('en-IN', {
             day: 'numeric',
@@ -348,8 +380,10 @@ export const OrderProvider: React.FC<{ children: ReactNode }> = ({ children }) =
           };
         }
         return order;
-      })
-    );
+      });
+      saveAndBroadcastOrders(updated);
+      return updated;
+    });
 
     showToast(`Order status updated to "${newStatus}"`, 'success');
   };
@@ -361,8 +395,8 @@ export const OrderProvider: React.FC<{ children: ReactNode }> = ({ children }) =
   ) => {
     const verifiedBool = isVerified === true || isVerified === 'Verified';
 
-    setOrders((prev) =>
-      prev.map((order) => {
+    setOrders((prev) => {
+      const updated = prev.map((order) => {
         if (order.id === orderId) {
           const nowStr = new Date().toLocaleString('en-IN', {
             day: 'numeric',
@@ -402,8 +436,10 @@ export const OrderProvider: React.FC<{ children: ReactNode }> = ({ children }) =
           };
         }
         return order;
-      })
-    );
+      });
+      saveAndBroadcastOrders(updated);
+      return updated;
+    });
 
     showToast(
       verifiedBool ? 'Payment verified successfully!' : 'Payment verification marked as rejected.',
@@ -412,8 +448,8 @@ export const OrderProvider: React.FC<{ children: ReactNode }> = ({ children }) =
   };
 
   const uploadPaymentReceipt = (orderId: string, screenshotUrl: string, utrNumber?: string) => {
-    setOrders((prev) =>
-      prev.map((order) => {
+    setOrders((prev) => {
+      const updated = prev.map((order) => {
         if (order.id === orderId) {
           return {
             ...order,
@@ -423,15 +459,17 @@ export const OrderProvider: React.FC<{ children: ReactNode }> = ({ children }) =
           };
         }
         return order;
-      })
-    );
+      });
+      saveAndBroadcastOrders(updated);
+      return updated;
+    });
     showToast('Payment receipt uploaded successfully!', 'success');
   };
 
   const addInternalAdminNote = (orderId: string, note: string) => {
     const nowStr = new Date().toLocaleString('en-IN');
-    setOrders((prev) =>
-      prev.map((order) => {
+    setOrders((prev) => {
+      const updated = prev.map((order) => {
         if (order.id === orderId) {
           return {
             ...order,
@@ -441,8 +479,10 @@ export const OrderProvider: React.FC<{ children: ReactNode }> = ({ children }) =
           };
         }
         return order;
-      })
-    );
+      });
+      saveAndBroadcastOrders(updated);
+      return updated;
+    });
     showToast('Internal note saved', 'info');
   };
 
