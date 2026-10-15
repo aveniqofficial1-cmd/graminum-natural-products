@@ -1,7 +1,8 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, signInWithPopup, signOut as fbSignOut, sendPasswordResetEmail } from 'firebase/auth';
+import { getFirestore } from 'firebase/firestore';
 
-// Firebase configuration for Graminum Organic Foods
+// Firebase configuration for Graminum Natural Products
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY || 'AIzaSyDIouI6K5CYZAjVPde1Yvus3PIek6d8D4U',
   authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || 'graminum-organic-foods.firebaseapp.com',
@@ -14,7 +15,8 @@ const firebaseConfig = {
 // Initialize Firebase safely
 const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 const auth = getAuth(app);
+const db = getFirestore(app);
 const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: 'select_account' });
 
-export { app, auth, googleProvider, signInWithPopup, fbSignOut, sendPasswordResetEmail };
+export { app, auth, db, googleProvider, signInWithPopup, fbSignOut, sendPasswordResetEmail };

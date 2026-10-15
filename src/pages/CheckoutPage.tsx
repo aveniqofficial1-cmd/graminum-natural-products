@@ -189,36 +189,38 @@ export const CheckoutPage: React.FC = () => {
     const finalPaymentMethod: PaymentMethod =
       paymentChoice === 'cash' ? 'Cash on Delivery' : 'UPI / QR Code';
 
-    const newOrder = createOrder({
-      customerName: fullName.trim(),
-      customerEmail: email.trim(),
-      customerPhone: phone.trim(),
-      items: [...items],
-      subtotal,
-      deliveryFee: 0,
-      discount: 0,
-      grandTotal: effectiveTotal,
-      deliveryMethod,
-      shippingAddress,
-      paymentMethod: finalPaymentMethod,
-      paymentScreenshot: paymentChoice === 'online' ? receiptImage || undefined : undefined,
-      paymentUtr: paymentChoice === 'online' ? paymentUtr.trim() || undefined : undefined,
-    });
-
-    clearCart();
-
-    // Auto-open WhatsApp with complete pre-filled details
-    const whatsappUrl = generateWhatsAppOrderUrl(newOrder);
-
-    setTimeout(() => {
-      setIsPlacingOrder(false);
+    // The order must reach the shared store before the customer is told it exists.
+    void (async () => {
       try {
-        window.open(whatsappUrl, '_blank');
+        const newOrder = await createOrder({
+          customerName: fullName.trim(),
+          customerEmail: email.trim(),
+          customerPhone: phone.trim(),
+          items: [...items],
+          subtotal,
+          deliveryFee: 0,
+          discount: 0,
+          grandTotal: effectiveTotal,
+          deliveryMethod,
+          shippingAddress,
+          paymentMethod: finalPaymentMethod,
+          paymentScreenshot: paymentChoice === 'online' ? receiptImage || undefined : undefined,
+          paymentUtr: paymentChoice === 'online' ? paymentUtr.trim() || undefined : undefined,
+        });
+
+        clearCart();
+        try {
+          window.open(generateWhatsAppOrderUrl(newOrder), '_blank');
+        } catch {
+          // popup might be blocked
+        }
+        navigate(`/order-confirmation/${newOrder.orderNumber}`);
       } catch {
-        // popup might be blocked
+        showToast('Your order was not saved. Please check your connection and try again.', 'error');
+      } finally {
+        setIsPlacingOrder(false);
       }
-      navigate(`/order-confirmation/${newOrder.orderNumber}`);
-    }, 600);
+    })();
   };
 
   // ================= UNAUTHENTICATED STATE: LOGIN / SIGNUP REQUIRED =================

@@ -27,7 +27,7 @@ import { useOrders } from '../context/OrderContext';
 import { useStoreSettings } from '../context/StoreSettingsContext';
 import { useAuth } from '../context/AuthContext';
 import { Breadcrumb } from '../components/common/Breadcrumb';
-import { OrderStatus } from '../types';
+import { Order, OrderStatus } from '../types';
 
 export const OrderTrackingPage: React.FC = () => {
   const { orderId } = useParams<{ orderId: string }>();
@@ -39,23 +39,20 @@ export const OrderTrackingPage: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState(orderId || '');
   const [isGoogleLoading, setIsGoogleLoading] = useState(false);
 
-  // Filter orders relevant to current user
+  // A customer only ever sees orders placed with their own email.
   const userOrders = orders.filter(
-    (o) =>
-      !currentUser ||
-      o.customerEmail.toLowerCase() === currentUser.email.toLowerCase() ||
-      o.customerName.toLowerCase().includes(currentUser.name.split(' ')[0].toLowerCase())
+    (o) => !!currentUser && o.customerEmail.toLowerCase() === currentUser.email.toLowerCase()
   );
 
-  const initialOrder = orderId
-    ? getOrderById(orderId)
-    : userOrders.length > 0
-    ? userOrders[0]
-    : orders.length > 0
-    ? orders[0]
-    : undefined;
+  const requestedOrder = orderId ? getOrderById(orderId) : undefined;
+  const initialOrder =
+    requestedOrder &&
+    currentUser &&
+    requestedOrder.customerEmail.toLowerCase() === currentUser.email.toLowerCase()
+      ? requestedOrder
+      : userOrders[0];
 
-  const [currentOrder, setCurrentOrder] = useState(initialOrder);
+  const [currentOrder, setCurrentOrder] = useState<Order | undefined>(initialOrder);
 
   useEffect(() => {
     if (orderId) {

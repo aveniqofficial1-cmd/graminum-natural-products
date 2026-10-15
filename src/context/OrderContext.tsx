@@ -2,6 +2,7 @@ import React, { createContext, useContext, useState, useEffect, ReactNode } from
 import { Order, OrderStatus, PaymentStatus, DeliveryMethod, PaymentMethod, Address, CartItem } from '../types';
 import { INITIAL_PRODUCTS } from '../data/products';
 import { useToast } from './ToastContext';
+import { migrateDocument, saveOrder, SHARED_COLLECTIONS, subscribeOrders } from '../firebase/sharedStore';
 
 interface OrderContextType {
   orders: Order[];
@@ -19,8 +20,10 @@ interface OrderContextType {
     paymentMethod: PaymentMethod;
     paymentScreenshot?: string;
     paymentUtr?: string;
-  }) => Order;
+  }) => Promise<Order>;
   getOrderById: (orderIdOrNumber: string) => Order | undefined;
+  ordersLoading: boolean;
+  ordersError: string | null;
   updateOrderStatus: (orderId: string, newStatus: OrderStatus, adminNote?: string) => void;
   verifyPayment: (orderId: string, isVerified: boolean | 'Verified' | 'Failed', note?: string) => void;
   uploadPaymentReceipt: (orderId: string, screenshotUrl: string, utrNumber?: string) => void;
@@ -57,83 +60,76 @@ interface OrderContextType {
 
 const OrderContext = createContext<OrderContextType | undefined>(undefined);
 
-// Using a cloud-shared localStorage key + BroadcastChannel for absolute multi-device & multi-tab real-time sync
-const ORDERS_STORAGE_KEY = 'graminum_shared_orders_global_v5';
+// Legacy per-browser copies. Read once so an order placed before the shared
+// database existed is copied up instead of discarded. Never written again.
+const LEGACY_ORDER_KEYS = ['graminum_shared_orders_global_v5', 'graminum_orders_v3'];
+
+const readLegacyOrders = (): Order[] => {
+  for (const key of LEGACY_ORDER_KEYS) {
+    try {
+      const stored = localStorage.getItem(key);
+      if (!stored) continue;
+      const parsed = JSON.parse(stored);
+      if (Array.isArray(parsed)) return parsed;
+    } catch {
+      // ignore unreadable legacy data
+    }
+  }
+  return [];
+};
 
 export const OrderProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
-  const [orders, setOrders] = useState<Order[]>(() => {
-    try {
-      // Clear legacy sample/demo orders if requested or fresh start
-      const stored = localStorage.getItem(ORDERS_STORAGE_KEY);
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        if (Array.isArray(parsed)) {
-          return parsed;
-        }
-      }
-    } catch {
-      // ignore
-    }
-    return [];
-  });
+  const [orders, setOrders] = useState<Order[]>([]);
+  const [ordersLoading, setOrdersLoading] = useState(true);
+  const [ordersError, setOrdersError] = useState<string | null>(null);
 
   const { showToast } = useToast();
 
-  // Helper to persist to localStorage & broadcast to all tabs/devices listening
-  const saveAndBroadcastOrders = (updatedOrders: Order[]) => {
-    try {
-      localStorage.setItem(ORDERS_STORAGE_KEY, JSON.stringify(updatedOrders));
-      // Dispatch storage event for other windows on same browser
-      window.dispatchEvent(
-        new StorageEvent('storage', {
-          key: ORDERS_STORAGE_KEY,
-          newValue: JSON.stringify(updatedOrders),
-        })
-      );
-    } catch (e) {
-      console.error('Error saving orders', e);
-    }
-  };
-
-  // Synchronize across browser tabs and devices via window storage events
+  // The shared order list. Every admin, manager, and customer session
+  // subscribes to the same collection, so a new order shows up on every device.
   useEffect(() => {
-    const handleStorageChange = (e: StorageEvent) => {
-      if (e.key === ORDERS_STORAGE_KEY && e.newValue) {
-        try {
-          const parsed = JSON.parse(e.newValue);
-          if (Array.isArray(parsed)) {
-            setOrders(parsed);
-          }
-        } catch {
-          // ignore
-        }
+    let active = true;
+    const unsubscribe = subscribeOrders(
+      (shared) => {
+        if (!active) return;
+        setOrders(shared);
+        setOrdersLoading(false);
+        setOrdersError(null);
+
+        const legacy = readLegacyOrders();
+        if (legacy.length === 0) return;
+        const known = new Set(shared.map((order) => order.id));
+        const missing = legacy.filter((order) => order.id && !known.has(order.id));
+        if (missing.length === 0) return;
+        Promise.all(
+          missing.map((order) => migrateDocument(SHARED_COLLECTIONS.orders, order.id, order))
+        ).catch((error) => console.error('Could not copy older orders to the shared store', error));
+      },
+      (error) => {
+        if (!active) return;
+        console.error('Shared orders listener failed', error);
+        setOrdersLoading(false);
+        setOrdersError('Live orders are unavailable right now. They will reload automatically.');
       }
-    };
-    window.addEventListener('storage', handleStorageChange);
-
-    // Also poll localStorage every 2 seconds to guarantee multi-device / multi-session sync without requiring manual refresh
-    const interval = setInterval(() => {
-      try {
-        const stored = localStorage.getItem(ORDERS_STORAGE_KEY);
-        if (stored) {
-          const parsed = JSON.parse(stored);
-          if (Array.isArray(parsed)) {
-            setOrders((prev) => {
-              if (JSON.stringify(prev) !== JSON.stringify(parsed)) {
-                return parsed;
-              }
-              return prev;
-            });
-          }
-        }
-      } catch {}
-    }, 2000);
-
+    );
     return () => {
-      window.removeEventListener('storage', handleStorageChange);
-      clearInterval(interval);
+      active = false;
+      unsubscribe();
     };
   }, []);
+
+  const persistOrder = async (order: Order): Promise<void> => {
+    try {
+      await saveOrder(order);
+    } catch (error) {
+      console.error('Failed to save order', error);
+      showToast(
+        error instanceof Error ? error.message : 'Could not save the order to the shared store.',
+        'error'
+      );
+      throw error;
+    }
+  };
 
   const generateOrderNumber = (): string => {
     const randomNum = Math.floor(10000 + Math.random() * 90000);
@@ -154,7 +150,8 @@ export const OrderProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     paymentMethod: PaymentMethod;
     paymentScreenshot?: string;
     paymentUtr?: string;
-  }): Order => {
+  }): Promise<Order> =>
+    (async () => {
     const orderNumber = generateOrderNumber();
     const id = `ord-${Date.now()}`;
     const now = new Date();
@@ -296,14 +293,9 @@ export const OrderProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       updatedAt: now.toISOString(),
     };
 
-    setOrders((prev) => {
-      const updated = [newOrder, ...prev];
-      saveAndBroadcastOrders(updated);
-      return updated;
-    });
-
+    await persistOrder(newOrder);
     return newOrder;
-  };
+  })();
 
   const getOrderById = (orderIdOrNumber: string): Order | undefined => {
     const clean = orderIdOrNumber.trim().replace('#', '').toLowerCase();
@@ -381,7 +373,8 @@ export const OrderProvider: React.FC<{ children: ReactNode }> = ({ children }) =
         }
         return order;
       });
-      saveAndBroadcastOrders(updated);
+      const changed = updated.find((order) => order.updatedAt !== prev.find((item) => item.id === order.id)?.updatedAt);
+      if (changed) void persistOrder(changed);
       return updated;
     });
 
@@ -437,7 +430,8 @@ export const OrderProvider: React.FC<{ children: ReactNode }> = ({ children }) =
         }
         return order;
       });
-      saveAndBroadcastOrders(updated);
+      const changed = updated.find((order) => order.updatedAt !== prev.find((item) => item.id === order.id)?.updatedAt);
+      if (changed) void persistOrder(changed);
       return updated;
     });
 
@@ -460,7 +454,8 @@ export const OrderProvider: React.FC<{ children: ReactNode }> = ({ children }) =
         }
         return order;
       });
-      saveAndBroadcastOrders(updated);
+      const changed = updated.find((order) => order.updatedAt !== prev.find((item) => item.id === order.id)?.updatedAt);
+      if (changed) void persistOrder(changed);
       return updated;
     });
     showToast('Payment receipt uploaded successfully!', 'success');
@@ -480,7 +475,8 @@ export const OrderProvider: React.FC<{ children: ReactNode }> = ({ children }) =
         }
         return order;
       });
-      saveAndBroadcastOrders(updated);
+      const changed = updated.find((order) => order.updatedAt !== prev.find((item) => item.id === order.id)?.updatedAt);
+      if (changed) void persistOrder(changed);
       return updated;
     });
     showToast('Internal note saved', 'info');
@@ -588,6 +584,8 @@ export const OrderProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     <OrderContext.Provider
       value={{
         orders,
+        ordersLoading,
+        ordersError,
         createOrder,
         getOrderById,
         updateOrderStatus,

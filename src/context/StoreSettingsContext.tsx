@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { StorePaymentSettings, Order } from '../types';
 import { useToast } from './ToastContext';
+import { saveSettings, subscribeSettings } from '../firebase/sharedStore';
 
 interface StoreSettingsContextType {
   settings: StorePaymentSettings;
@@ -15,6 +16,10 @@ interface StoreSettingsContextType {
 const StoreSettingsContext = createContext<StoreSettingsContextType | undefined>(undefined);
 
 const SETTINGS_STORAGE_KEY = 'graminum_store_payment_settings_v3';
+
+// Public payment details only. The admin security password stays in this
+// browser and is never written to the shared database.
+const SHARED_SETTING_FIELDS = ['whatsappNumber', 'upiId', 'merchantName', 'customQrCodeUrl', 'instructions'] as const;
 
 const DEFAULT_SETTINGS: StorePaymentSettings = {
   whatsappNumber: '9396723139',
@@ -41,13 +46,32 @@ export const StoreSettingsProvider: React.FC<{ children: ReactNode }> = ({ child
     return DEFAULT_SETTINGS;
   });
 
+  const toSharedSettings = (value: StorePaymentSettings): StorePaymentSettings => ({
+    whatsappNumber: value.whatsappNumber,
+    upiId: value.upiId,
+    merchantName: value.merchantName,
+    customQrCodeUrl: value.customQrCodeUrl,
+    instructions: value.instructions,
+    adminSecurityPassword: '',
+  });
+
+  // WhatsApp number, UPI id, and QR image are shared, so a change made by one
+  // admin is what every checkout screen uses. The security password is not.
   useEffect(() => {
-    try {
-      localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
-    } catch (e) {
-      console.error('Error saving store settings', e);
-    }
-  }, [settings]);
+    const unsubscribe = subscribeSettings(
+      (shared) => {
+        if (!shared) {
+          void saveSettings(toSharedSettings(settings));
+          return;
+        }
+        setSettings((prev) => ({ ...prev, ...shared, adminSecurityPassword: prev.adminSecurityPassword }));
+      },
+      (error) => console.error('Shared settings listener failed', error)
+    );
+    return unsubscribe;
+    // Seed once. Later updates arrive through the listener.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const getCleanWhatsAppNumber = (): string => {
     return settings.whatsappNumber.replace(/[^0-9]/g, '');
@@ -82,20 +106,30 @@ export const StoreSettingsProvider: React.FC<{ children: ReactNode }> = ({ child
       showToast('New password must be at least 4 characters long.', 'error');
       return false;
     }
-    setSettings((prev) => ({
-      ...prev,
-      adminSecurityPassword: newPass.trim(),
-    }));
+    const next = { ...settings, adminSecurityPassword: newPass.trim() };
+    setSettings(next);
+    try {
+      localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(next));
+    } catch {
+      // the password remains active for this session even if storage is full
+    }
     showToast('Admin security password updated successfully!', 'success');
     return true;
   };
 
   const updateStoreSettings = (newSettings: Partial<StorePaymentSettings>) => {
-    setSettings((prev) => ({
-      ...prev,
-      ...newSettings,
-    }));
-    showToast('Payment Scanner & WhatsApp settings updated successfully!', 'success');
+    const sharedUpdate: Partial<StorePaymentSettings> = {};
+    for (const field of SHARED_SETTING_FIELDS) {
+      if (newSettings[field] !== undefined) sharedUpdate[field] = newSettings[field];
+    }
+    const next = { ...settings, ...sharedUpdate };
+    setSettings(next);
+    saveSettings(toSharedSettings(next))
+      .then(() => showToast('Payment Scanner & WhatsApp settings updated successfully!', 'success'))
+      .catch((error) => {
+        console.error('Failed to save store settings', error);
+        showToast('Could not save the payment settings to the shared store.', 'error');
+      });
   };
 
   const generateWhatsAppOrderUrl = (order: Order): string => {

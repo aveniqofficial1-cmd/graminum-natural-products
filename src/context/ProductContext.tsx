@@ -2,6 +2,13 @@ import React, { createContext, useContext, useState, useEffect, ReactNode } from
 import { Product, ProductCategory } from '../types';
 import { INITIAL_PRODUCTS } from '../data/products';
 import { useToast } from './ToastContext';
+import {
+  migrateDocument,
+  removeProduct,
+  saveProduct,
+  SHARED_COLLECTIONS,
+  subscribeProducts,
+} from '../firebase/sharedStore';
 
 interface ProductContextType {
   products: Product[];
@@ -17,71 +24,63 @@ interface ProductContextType {
 
 const ProductContext = createContext<ProductContextType | undefined>(undefined);
 
-const PRODUCTS_STORAGE_KEY = 'graminum_catalog_products_v4';
+const LEGACY_PRODUCT_KEYS = ['graminum_catalog_products_v4', 'graminum_catalog_products_v3'];
+
+const readLegacyProducts = (): Product[] => {
+  for (const key of LEGACY_PRODUCT_KEYS) {
+    try {
+      const saved = localStorage.getItem(key);
+      if (!saved) continue;
+      const parsed = JSON.parse(saved);
+      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+    } catch {
+      // ignore unreadable legacy data
+    }
+  }
+  return [];
+};
 
 export const ProductProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const { showToast } = useToast();
+  const [products, setProducts] = useState<Product[]>(INITIAL_PRODUCTS);
 
-  const [products, setProducts] = useState<Product[]>(() => {
+  const persistProduct = async (product: Product) => {
     try {
-      const saved = localStorage.getItem(PRODUCTS_STORAGE_KEY);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) {
-          return parsed;
-        }
-      }
-      // Migrate from v3 if exists
-      const legacyV3 = localStorage.getItem('graminum_catalog_products_v3');
-      if (legacyV3) {
-        const parsedV3 = JSON.parse(legacyV3);
-        if (Array.isArray(parsedV3) && parsedV3.length > 0) {
-          localStorage.setItem(PRODUCTS_STORAGE_KEY, JSON.stringify(parsedV3));
-          return parsedV3;
-        }
-      }
-    } catch (e) {
-      console.error('Error loading products from localStorage', e);
-    }
-    // Default initial authentic catalog
-    try {
-      localStorage.setItem(PRODUCTS_STORAGE_KEY, JSON.stringify(INITIAL_PRODUCTS));
-    } catch {
-      // ignore
-    }
-    return INITIAL_PRODUCTS;
-  });
-
-  // Helper to persist immediately to localStorage
-  const saveToStorage = (updatedProducts: Product[]) => {
-    try {
-      localStorage.setItem(PRODUCTS_STORAGE_KEY, JSON.stringify(updatedProducts));
-    } catch (e) {
-      console.error('Error persisting products to localStorage', e);
+      await saveProduct(product);
+    } catch (error) {
+      console.error('Failed to save product', error);
+      showToast(
+        error instanceof Error ? error.message : 'Could not save the product to the shared catalog.',
+        'error'
+      );
     }
   };
 
-  // Save to localStorage whenever product catalog changes
+  // One shared catalog. A product added by any admin or manager appears for
+  // every staff session and every customer storefront.
   useEffect(() => {
-    saveToStorage(products);
-  }, [products]);
-
-  // Sync products across multiple browser tabs / windows in real time
-  useEffect(() => {
-    const handleStorage = (e: StorageEvent) => {
-      if (e.key === PRODUCTS_STORAGE_KEY && e.newValue) {
-        try {
-          const parsed = JSON.parse(e.newValue);
-          if (Array.isArray(parsed)) {
-            setProducts(parsed);
-          }
-        } catch {
-          // ignore
+    let active = true;
+    const unsubscribe = subscribeProducts(
+      (shared) => {
+        if (!active) return;
+        if (shared.length === 0) {
+          const legacy = readLegacyProducts();
+          const seed = legacy.length > 0 ? legacy : INITIAL_PRODUCTS;
+          Promise.all(
+            seed.map((product) => migrateDocument(SHARED_COLLECTIONS.products, product.id, product))
+          ).catch((error) => console.error('Could not seed the shared catalog', error));
+          return;
         }
+        setProducts(shared);
+      },
+      (error) => {
+        console.error('Shared catalog listener failed', error);
       }
+    );
+    return () => {
+      active = false;
+      unsubscribe();
     };
-    window.addEventListener('storage', handleStorage);
-    return () => window.removeEventListener('storage', handleStorage);
   }, []);
 
   const categories: ProductCategory[] = [
@@ -114,11 +113,8 @@ export const ProductProvider: React.FC<{ children: ReactNode }> = ({ children })
           .replace(/(^-|-$)/g, ''),
     };
 
-    setProducts((prev) => {
-      const updated = [newProduct, ...prev];
-      saveToStorage(updated);
-      return updated;
-    });
+    setProducts((prev) => [newProduct, ...prev]);
+    void persistProduct(newProduct);
     showToast(`Added "${newProduct.name}" to catalog successfully!`, 'success');
   };
 
@@ -126,7 +122,7 @@ export const ProductProvider: React.FC<{ children: ReactNode }> = ({ children })
     setProducts((prev) => {
       const updated = prev.map((p) => {
         if (p.id === productId) {
-          return {
+          const next = {
             ...p,
             ...updatedData,
             slug:
@@ -138,10 +134,11 @@ export const ProductProvider: React.FC<{ children: ReactNode }> = ({ children })
                     .replace(/(^-|-$)/g, '')
                 : p.slug),
           };
+          void persistProduct(next);
+          return next;
         }
         return p;
       });
-      saveToStorage(updated);
       return updated;
     });
     showToast('Product updated successfully!', 'success');
@@ -149,10 +146,10 @@ export const ProductProvider: React.FC<{ children: ReactNode }> = ({ children })
 
   const deleteProduct = (productId: string) => {
     const target = products.find((p) => p.id === productId);
-    setProducts((prev) => {
-      const updated = prev.filter((p) => p.id !== productId);
-      saveToStorage(updated);
-      return updated;
+    setProducts((prev) => prev.filter((p) => p.id !== productId));
+    removeProduct(productId).catch((error) => {
+      console.error('Failed to delete product', error);
+      showToast('Could not remove the product from the shared catalog.', 'error');
     });
     showToast(`Deleted "${target?.name || 'Product'}" from catalog.`, 'info');
   };
@@ -160,22 +157,32 @@ export const ProductProvider: React.FC<{ children: ReactNode }> = ({ children })
   const bulkUploadProducts = (newProducts: Product[], replaceAll: boolean = false) => {
     if (replaceAll) {
       setProducts(newProducts);
-      saveToStorage(newProducts);
-      showToast(`Replaced entire catalog with ${newProducts.length} products!`, 'success');
     } else {
-      setProducts((prev) => {
-        const updated = [...newProducts, ...prev];
-        saveToStorage(updated);
-        return updated;
-      });
-      showToast(`Successfully imported ${newProducts.length} new products!`, 'success');
+      setProducts((prev) => [...newProducts, ...prev]);
     }
+    Promise.all(newProducts.map((product) => saveProduct(product)))
+      .then(() =>
+        showToast(
+          replaceAll
+            ? `Replaced catalog entries with ${newProducts.length} products!`
+            : `Successfully imported ${newProducts.length} new products!`,
+          'success'
+        )
+      )
+      .catch((error) => {
+        console.error('Bulk upload failed', error);
+        showToast('Some products could not be saved to the shared catalog.', 'error');
+      });
   };
 
   const resetToDefaultCatalog = () => {
     setProducts(INITIAL_PRODUCTS);
-    saveToStorage(INITIAL_PRODUCTS);
-    showToast('Catalog restored to default Graminum natural products!', 'success');
+    Promise.all(INITIAL_PRODUCTS.map((product) => saveProduct(product)))
+      .then(() => showToast('Catalog restored to default Graminum natural products!', 'success'))
+      .catch((error) => {
+        console.error('Catalog reset failed', error);
+        showToast('Could not restore the shared catalog.', 'error');
+      });
   };
 
   return (

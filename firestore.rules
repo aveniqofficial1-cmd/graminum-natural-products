@@ -1,0 +1,29 @@
+rules_version = '2';
+
+// The browser may read the shared store and may never write it.
+// Every create, update, and delete goes through the submitStoreWrite
+// Cloud Function, which uses the Admin SDK and bypasses these rules.
+// Staff authorization stays in the app: managers already cannot open
+// user-role management or the payment-settings screen.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /orders/{orderId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    match /products/{productId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    match /settings/{docId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
