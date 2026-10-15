@@ -1,25 +1,31 @@
 rules_version = '2';
 
-// The browser may read the shared store and may never write it.
-// Every create, update, and delete goes through the submitStoreWrite
-// Cloud Function, which uses the Admin SDK and bypasses these rules.
-// Staff authorization stays in the app: managers already cannot open
-// user-role management or the payment-settings screen.
+// Shared store data. The Spark plan cannot host the trusted writer function,
+// and staff sign in through the app's own local login rather than Firebase
+// Auth, so the browser reads and writes these three collections directly.
+// Every other collection is denied. The admin security password is never
+// stored here.
 service cloud.firestore {
   match /databases/{database}/documents {
     match /orders/{orderId} {
       allow read: if true;
-      allow write: if false;
+      allow create, update: if request.resource.data.keys().hasAll(['id', 'orderNumber', 'customerEmail', 'orderStatus'])
+        && request.resource.data.id == orderId;
+      allow delete: if false;
     }
 
     match /products/{productId} {
       allow read: if true;
-      allow write: if false;
+      allow create, update: if request.resource.data.keys().hasAll(['id', 'name', 'price'])
+        && request.resource.data.id == productId;
+      allow delete: if true;
     }
 
     match /settings/{docId} {
       allow read: if true;
-      allow write: if false;
+      allow create, update: if docId == 'store'
+        && !request.resource.data.keys().hasAny(['adminSecurityPassword']);
+      allow delete: if false;
     }
 
     match /{document=**} {

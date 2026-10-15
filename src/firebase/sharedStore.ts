@@ -13,21 +13,15 @@ import type { Order, Product, StorePaymentSettings } from '../types';
 /**
  * Shared store database.
  *
- * Orders, the catalog, and payment settings are written through one locked
- * Cloud Function (submitStoreWrite). The browser never writes Firestore
- * directly. Staff and customers subscribe here and receive the same data on
- * every device.
+ * Orders, the catalog, and payment settings live in Firestore. Every browser
+ * subscribes with onSnapshot, so an order placed on one device appears on
+ * every admin and manager session without a refresh.
  *
- * The write key is a store credential, not a per-user secret. It lives in the
- * Vite env at build time. Firestore rules reject every client write, so the
- * key alone cannot change data — the function checks it first.
+ * Writes go directly from the browser. The project is on the free Spark plan,
+ * which cannot run the trusted writer function, and staff sign in through the
+ * app's own login rather than Firebase Auth. The rules restrict writes to the
+ * three store collections and require the document's own id to match.
  */
-const WRITE_ENDPOINT =
-  import.meta.env.VITE_STORE_WRITE_URL ||
-  'https://us-central1-graminum-organic-foods.cloudfunctions.net/submitStoreWrite';
-
-const WRITE_KEY = import.meta.env.VITE_STORE_WRITE_KEY || 'graminum-store-write-9396723139';
-
 export const SHARED_COLLECTIONS = {
   orders: 'orders',
   products: 'products',
@@ -38,54 +32,35 @@ const SETTINGS_DOC_ID = 'store';
 
 const stripUndefined = <T>(value: T): T => JSON.parse(JSON.stringify(value));
 
-const writeShared = async (
-  action: 'set' | 'delete',
-  collectionName: string,
-  docId: string,
-  data?: unknown
-): Promise<void> => {
-  let response: Response;
+const writeDoc = async (collectionName: string, docId: string, data: unknown): Promise<void> => {
   try {
-    response = await fetch(WRITE_ENDPOINT, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        key: WRITE_KEY,
-        action,
-        collection: collectionName,
-        docId,
-        data: data === undefined ? undefined : stripUndefined(data),
-      }),
-    });
-  } catch {
-    throw new Error(
-      'Could not reach the shared store. Check your internet connection and try again.'
-    );
+    await setDoc(doc(db, collectionName, docId), stripUndefined(data));
+  } catch (error) {
+    console.error(`Shared store write failed for ${collectionName}/${docId}`, error);
+    throw new Error('Could not save to the shared store. Check your internet connection and try again.');
   }
+};
 
-  if (!response.ok) {
-    let detail = '';
-    try {
-      const body = await response.json();
-      detail = body?.error ? ` ${body.error}` : '';
-    } catch {
-      // ignore non-JSON error bodies
-    }
-    throw new Error(`The shared store rejected the update.${detail}`);
+const removeDoc = async (collectionName: string, docId: string): Promise<void> => {
+  try {
+    await deleteDoc(doc(db, collectionName, docId));
+  } catch (error) {
+    console.error(`Shared store delete failed for ${collectionName}/${docId}`, error);
+    throw new Error('Could not update the shared store. Check your internet connection and try again.');
   }
 };
 
 export const saveOrder = (order: Order): Promise<void> =>
-  writeShared('set', SHARED_COLLECTIONS.orders, order.id, order);
+  writeDoc(SHARED_COLLECTIONS.orders, order.id, order);
 
 export const saveProduct = (product: Product): Promise<void> =>
-  writeShared('set', SHARED_COLLECTIONS.products, product.id, product);
+  writeDoc(SHARED_COLLECTIONS.products, product.id, product);
 
 export const removeProduct = (productId: string): Promise<void> =>
-  writeShared('delete', SHARED_COLLECTIONS.products, productId);
+  removeDoc(SHARED_COLLECTIONS.products, productId);
 
 export const saveSettings = (settings: StorePaymentSettings): Promise<void> =>
-  writeShared('set', SHARED_COLLECTIONS.settings, SETTINGS_DOC_ID, settings);
+  writeDoc(SHARED_COLLECTIONS.settings, SETTINGS_DOC_ID, settings);
 
 export const subscribeOrders = (
   onChange: (orders: Order[]) => void,
@@ -127,11 +102,9 @@ export const subscribeSettings = (
     (error) => onError(error)
   );
 
-/** One-time server writes used to copy this browser's older local data up once. */
+/** Copies this browser's older local data up once. Existing ids are overwritten with the same content, so repeats do not duplicate anything. */
 export const migrateDocument = (
   collectionName: string,
   docId: string,
   data: unknown
-): Promise<void> => writeShared('set', collectionName, docId, data);
-
-export { deleteDoc, doc, setDoc };
+): Promise<void> => writeDoc(collectionName, docId, data);
