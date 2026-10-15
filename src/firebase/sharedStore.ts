@@ -30,7 +30,28 @@ export const SHARED_COLLECTIONS = {
 
 const SETTINGS_DOC_ID = 'store';
 
-const stripUndefined = <T>(value: T): T => JSON.parse(JSON.stringify(value));
+// Firestore rejects undefined values, and it silently drops empty arrays on
+// write. An order with no items would then come back without an items field
+// and crash every screen that reads items.length. Empty arrays are kept as a
+// single null entry, which readers already skip.
+const stripUndefined = <T>(value: T): T => {
+  const json = JSON.stringify(value, (_key, item) => {
+    if (Array.isArray(item) && item.length === 0) return [null];
+    return item;
+  });
+  const restore = (item: unknown): unknown => {
+    if (Array.isArray(item)) {
+      return item.length === 1 && item[0] === null ? [] : item.map(restore);
+    }
+    if (item && typeof item === 'object') {
+      return Object.fromEntries(
+        Object.entries(item as Record<string, unknown>).map(([key, entry]) => [key, restore(entry)])
+      );
+    }
+    return item;
+  };
+  return restore(JSON.parse(json)) as T;
+};
 
 const writeDoc = async (collectionName: string, docId: string, data: unknown): Promise<void> => {
   try {

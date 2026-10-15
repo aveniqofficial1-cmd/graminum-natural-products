@@ -52,13 +52,14 @@ export const AdminOrdersPage: React.FC = () => {
 
   const filteredOrders = orders.filter((o) => {
     const matchesTab = selectedStatusTab === 'All' || o.orderStatus === selectedStatusTab;
+    const q = searchQuery.toLowerCase();
     const matchesSearch =
-      o.orderNumber.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      o.customerName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      o.customerPhone.includes(searchQuery) ||
-      o.shippingAddress.city.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      o.deliveryMethod.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      o.paymentMethod.toLowerCase().includes(searchQuery.toLowerCase());
+      (o.orderNumber || '').toLowerCase().includes(q) ||
+      (o.customerName || '').toLowerCase().includes(q) ||
+      (o.customerPhone || '').includes(searchQuery) ||
+      (o.shippingAddress?.city || '').toLowerCase().includes(q) ||
+      (o.deliveryMethod || '').toLowerCase().includes(q) ||
+      (o.paymentMethod || '').toLowerCase().includes(q);
     return matchesTab && matchesSearch;
   });
 
@@ -233,7 +234,7 @@ export const AdminOrdersPage: React.FC = () => {
                     <td className="py-3.5 px-3">
                       <p className="font-bold text-[#18251B]">{order.customerName}</p>
                       <p className="text-[10px] text-gray-500">
-                        {order.customerPhone} • {order.shippingAddress.city}
+                        {order.customerPhone || ''} • {order.shippingAddress?.city || ''}
                       </p>
                     </td>
 
@@ -250,8 +251,8 @@ export const AdminOrdersPage: React.FC = () => {
                     {/* Items */}
                     <td className="py-3.5 px-3">
                       <span className="text-gray-600 font-medium">
-                        {order.items.length} item(s) (
-                        {order.items.map((i) => i.product.name.split(' ')[0]).join(', ')})
+                        {(order.items || []).length} item(s) (
+                        {(order.items || []).map((i) => (i.product?.name || '').split(' ')[0]).join(', ')})
                       </span>
                     </td>
 
@@ -578,16 +579,16 @@ export const AdminOrdersPage: React.FC = () => {
                 Harvest Items in this Package
               </h3>
               <div className="border border-[#E1E9DC] rounded-2xl overflow-hidden divide-y divide-[#E1E9DC]">
-                {selectedOrder.items.map((it, idx) => (
+                {(selectedOrder.items || []).map((it, idx) => (
                   <div key={idx} className="p-3.5 flex items-center justify-between text-xs bg-[#FBF8EF]/40">
                     <div className="flex items-center gap-3">
                       <img
-                        src={it.product.image}
-                        alt={it.product.name}
+                        src={it.product?.image || ''}
+                        alt={it.product?.name || ''}
                         className="w-10 h-10 object-cover rounded-xl border shrink-0 bg-[#EFF7E9]"
                       />
                       <div>
-                        <p className="font-bold text-[#18251B]">{it.product.name}</p>
+                        <p className="font-bold text-[#18251B]">{it.product?.name || 'Unknown Product'}</p>
                         <p className="text-[11px] text-gray-500">
                           Pack: <strong className="text-[#075B2A]">{it.selectedPackSize}</strong> × {it.quantity} units
                         </p>
@@ -624,7 +625,7 @@ export const AdminOrdersPage: React.FC = () => {
                 <p className="text-gray-600">✉️ {selectedOrder.customerEmail}</p>
                 <div className="pt-2">
                   <a
-                    href={`https://wa.me/${selectedOrder.customerPhone.replace(/[^0-9]/g, '')}?text=${encodeURIComponent(
+                    href={`https://wa.me/${(selectedOrder.customerPhone || '').replace(/[^0-9]/g, '')}?text=${encodeURIComponent(
                       `Namaskaram ${selectedOrder.customerName}! Regarding your Graminum Order #${selectedOrder.orderNumber} (₹${selectedOrder.grandTotal}): `
                     )}`}
                     target="_blank"
@@ -642,12 +643,12 @@ export const AdminOrdersPage: React.FC = () => {
                   Fulfillment & Store Location
                 </h4>
                 <p className="font-bold text-[#18251B]">
-                  {selectedOrder.shippingAddress.fullName}
+                  {selectedOrder.shippingAddress?.fullName || ''}
                 </p>
-                <p className="text-gray-600">{selectedOrder.shippingAddress.addressLine}</p>
+                <p className="text-gray-600">{selectedOrder.shippingAddress?.addressLine || ''}</p>
                 <p className="text-gray-600">
-                  {selectedOrder.shippingAddress.city}, {selectedOrder.shippingAddress.state} —{' '}
-                  {selectedOrder.shippingAddress.pincode}
+                  {selectedOrder.shippingAddress?.city || ''}, {selectedOrder.shippingAddress?.state || ''} —{' '}
+                  {selectedOrder.shippingAddress?.pincode || ''}
                 </p>
                 <p className="text-[11px] font-bold text-[#4D963C] pt-1">
                   Fulfillment: {selectedOrder.deliveryMethod} (Kashibugga Warangal Counter)

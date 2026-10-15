@@ -135,10 +135,10 @@ export const StoreSettingsProvider: React.FC<{ children: ReactNode }> = ({ child
   const generateWhatsAppOrderUrl = (order: Order): string => {
     const cleanPhone = getCleanWhatsAppNumber() || '9396723139';
 
-    const itemsSummary = order.items
+    const itemsSummary = (order.items || [])
       .map(
         (it, idx) =>
-          `${idx + 1}. *${it.product.name}* (${it.selectedPackSize}) x ${it.quantity} = ₹${
+          `${idx + 1}. *${it.product?.name || 'Item'}* (${it.selectedPackSize}) x ${it.quantity} = ₹${
             it.unitPrice * it.quantity
           }`
       )
@@ -148,7 +148,7 @@ export const StoreSettingsProvider: React.FC<{ children: ReactNode }> = ({ child
     const isCOD = order.paymentMethod === 'Cash on Delivery';
 
     const fulfillmentText = isHomeDelivery
-      ? `🚚 *Fulfillment:* Online Home Delivery\n🏡 *Delivery Address:*\n${order.shippingAddress.fullName}\n${order.shippingAddress.addressLine}, ${order.shippingAddress.city} - ${order.shippingAddress.pincode}\n📞 ${order.shippingAddress.phone}`
+      ? `🚚 *Fulfillment:* Online Home Delivery\n🏡 *Delivery Address:*\n${order.shippingAddress?.fullName || ''}\n${order.shippingAddress?.addressLine || ''}, ${order.shippingAddress?.city || ''} - ${order.shippingAddress?.pincode || ''}\n📞 ${order.shippingAddress?.phone || ''}`
       : `🏬 *Fulfillment:* Direct Store Pickup\n📍 *Store Location:* Graminum Herbal Store, 11-18-356/3/A, Opp Sai Baba Temple, Beside Assisi School, O City, Kashibugga, Warangal-506002\n📞 Store Help: 9396723139`;
 
     const paymentText = isCOD

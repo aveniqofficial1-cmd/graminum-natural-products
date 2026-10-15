@@ -382,7 +382,7 @@ export const AdminDashboardPage: React.FC = () => {
                       <p className="text-[10px] text-gray-500">{order.customerPhone}</p>
                     </td>
                     <td className="py-3 px-3 text-gray-600 font-medium">
-                      {order.items.length} item(s)
+                      {(order.items || []).length} item(s)
                     </td>
                     <td className="py-3 px-3 font-bold text-[#075B2A]">
                       ₹{order.grandTotal}

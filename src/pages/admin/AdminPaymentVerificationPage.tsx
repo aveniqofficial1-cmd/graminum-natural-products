@@ -145,7 +145,7 @@ export const AdminPaymentVerificationPage: React.FC = () => {
                     <div className="text-xs space-y-0.5">
                       <p className="font-bold text-[#18251B]">{order.customerName}</p>
                       <p className="text-[11px] text-gray-500">
-                        Total Amount: <strong className="text-[#075B2A]">₹{order.grandTotal}</strong> • {order.items.length} item(s)
+                        Total Amount: <strong className="text-[#075B2A]">₹{order.grandTotal}</strong> • {(order.items || []).length} item(s)
                       </p>
                     </div>
 
@@ -249,13 +249,13 @@ export const AdminPaymentVerificationPage: React.FC = () => {
               {/* Items in this Order */}
               <div className="space-y-2 pt-2">
                 <h3 className="text-xs font-bold text-[#075B2A] uppercase tracking-wider">
-                  Items Purchased ({selectedOrder.items.length})
+                  Items Purchased ({(selectedOrder.items || []).length})
                 </h3>
                 <div className="divide-y divide-[#E1E9DC] border border-[#E1E9DC] rounded-2xl p-3 text-xs bg-[#FBF8EF]/30 max-h-36 overflow-y-auto">
-                  {selectedOrder.items.map((it, idx) => (
+                  {(selectedOrder.items || []).map((it, idx) => (
                     <div key={idx} className="py-2 flex items-center justify-between">
                       <span className="font-bold text-[#18251B]">
-                        {it.product.name} ({it.selectedPackSize} × {it.quantity})
+                        {it.product?.name || 'Unknown Product'} ({it.selectedPackSize} × {it.quantity})
                       </span>
                       <span className="font-black text-[#075B2A]">
                         ₹{it.unitPrice * it.quantity}
@@ -274,7 +274,7 @@ export const AdminPaymentVerificationPage: React.FC = () => {
                   </span>
                 </div>
                 <a
-                  href={`https://wa.me/${selectedOrder.customerPhone.replace(/[^0-9]/g, '')}?text=${encodeURIComponent(
+                  href={`https://wa.me/${(selectedOrder.customerPhone || '').replace(/[^0-9]/g, '')}?text=${encodeURIComponent(
                     `Namaskaram ${selectedOrder.customerName}! Regarding your Graminum Order #${selectedOrder.orderNumber} for ₹${selectedOrder.grandTotal}: We have received your payment receipt.`
                   )}`}
                   target="_blank"
