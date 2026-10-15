@@ -132,12 +132,11 @@ export const CustomerAccountPage: React.FC<CustomerAccountPageProps> = ({ initia
     }
   }, [currentUser]);
 
-  // Filter orders for current user
+  // Filter orders for current user — strict email match only
   const userOrders = orders.filter(
     (o) =>
-      !currentUser ||
-      o.customerEmail.toLowerCase() === currentUser.email.toLowerCase() ||
-      o.customerName.toLowerCase().includes(currentUser.name.split(' ')[0].toLowerCase())
+      currentUser &&
+      o.customerEmail.toLowerCase() === currentUser.email.toLowerCase()
   );
 
   const filteredOrders = userOrders.filter((o) => {

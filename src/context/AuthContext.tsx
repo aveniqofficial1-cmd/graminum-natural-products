@@ -241,13 +241,17 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   // ================= GOOGLE AUTHENTICATION VIA FIREBASE =================
   const loginWithGoogle = async (): Promise<boolean> => {
     try {
-      let googleUser = null;
+      let googleUser: { uid?: string; email: string | null; displayName: string | null; photoURL: string | null } | null = null;
       try {
         const result = await signInWithPopup(auth, googleProvider);
-        googleUser = result.user;
+        googleUser = {
+          uid: result.user.uid,
+          email: result.user.email,
+          displayName: result.user.displayName,
+          photoURL: result.user.photoURL,
+        };
       } catch (fbErr: any) {
         console.warn('Firebase popup error, using fallback Google auth:', fbErr);
-        // If Firebase API key is demo or network block, prompt for email simulation
         const emailPrompt = window.prompt(
           'Google Sign-In: Enter your Google email address (e.g. maheshkolipaka96@gmail.com):',
           PRIMARY_ADMIN_EMAIL
@@ -259,7 +263,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         googleUser = {
           email: emailPrompt.trim().toLowerCase(),
           displayName: emailPrompt.split('@')[0],
-          photoURL: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100&auto=format&fit=crop&q=80',
+          photoURL: null,
         };
       }
 
@@ -270,14 +274,24 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
       const cleanEmail = googleUser.email.toLowerCase().trim();
       const isSuperAdmin = isAuthorizedAdminEmail(cleanEmail);
+      const firebaseUid = googleUser.uid || undefined;
 
-      // Look up existing user
-      let existing = registeredUsers.find((u) => u.email.toLowerCase() === cleanEmail);
+      // Look up by Firebase UID first, then by email
+      let existing = (firebaseUid
+        ? registeredUsers.find((u) => u.firebaseUid === firebaseUid)
+        : undefined) || registeredUsers.find((u) => u.email.toLowerCase() === cleanEmail);
 
       if (existing) {
-        // Upgrade role if super admin
-        if (isSuperAdmin && existing.role !== 'admin') {
-          existing = { ...existing, role: 'admin' };
+        // Attach the UID if missing (legacy migration)
+        const needsUidUpdate = firebaseUid && !existing.firebaseUid;
+        const needsRoleUpgrade = isSuperAdmin && existing.role !== 'admin';
+
+        if (needsUidUpdate || needsRoleUpgrade) {
+          existing = {
+            ...existing,
+            ...(needsUidUpdate ? { firebaseUid } : {}),
+            ...(needsRoleUpgrade ? { role: 'admin' as const } : {}),
+          };
           setRegisteredUsers((prev) =>
             prev.map((u) => (u.id === existing!.id ? existing! : u))
           );
@@ -293,29 +307,17 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         return true;
       }
 
-      // Create new user from Google profile
+      // Create new user — phone and address start empty
       const newUser: User = {
         id: `usr-g-${Date.now()}`,
+        firebaseUid,
         name: googleUser.displayName || cleanEmail.split('@')[0],
         email: cleanEmail,
-        phone: '9396723139',
+        phone: '',
         role: isSuperAdmin ? 'admin' : 'customer',
         photoURL: googleUser.photoURL || undefined,
         authProvider: 'google',
-        addresses: [
-          {
-            id: `addr-${Date.now()}`,
-            fullName: googleUser.displayName || 'Valued Customer',
-            email: cleanEmail,
-            phone: '9396723139',
-            addressLine: '11-18-356/3/A, Opposite Sai Baba Temple, Beside Assisi School, O City, Kashibugga',
-            city: 'Warangal',
-            state: 'Telangana',
-            pincode: '506002',
-            isDefault: true,
-            type: 'Home',
-          },
-        ],
+        addresses: [],
         createdAt: new Date().toISOString(),
       };
 
@@ -327,7 +329,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         setAdminUser(newUser);
         showToast(`Welcome Admin ${newUser.name}!`, 'success');
       } else {
-        showToast(`Welcome to Graminum, ${newUser.name}!`, 'success');
+        showToast(`Welcome to Graminum, ${newUser.name}! Please update your phone number and address in your profile.`, 'success');
       }
 
       return true;
@@ -363,8 +365,8 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         id: `usr-${Date.now()}`,
         name: cleanEmail.split('@')[0].replace(/[^a-zA-Z]/g, ' ').trim() || 'Valued Customer',
         email: cleanEmail,
-        phone: '9396723139',
-        password: password || '9396723139',
+        phone: '',
+        password: password || '',
         role: isSuper ? 'admin' : 'customer',
         authProvider: 'password',
         addresses: [],
@@ -409,24 +411,11 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       id: `usr-${Date.now()}`,
       name: name.trim() || 'Valued Customer',
       email: cleanEmail,
-      phone: phone.trim() || '9396723139',
+      phone: phone.trim() || '',
       password: password,
       role: isSuper ? 'admin' : 'customer',
       authProvider: 'password',
-      addresses: [
-        {
-          id: `addr-${Date.now()}`,
-          fullName: name.trim() || 'Valued Customer',
-          email: cleanEmail,
-          phone: phone.trim() || '9396723139',
-          addressLine: '11-18-356/3/A, Opposite Sai Baba Temple, Beside Assisi School, O City, Kashibugga',
-          city: 'Warangal',
-          state: 'Telangana',
-          pincode: '506002',
-          isDefault: true,
-          type: 'Home',
-        },
-      ],
+      addresses: [],
       createdAt: new Date().toISOString(),
     };
 
@@ -448,6 +437,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
     setCurrentUser(null);
     setIsAdminAuthenticated(false);
+    setAdminUser(null);
     showToast('Signed out successfully', 'info');
   };
 
@@ -650,13 +640,14 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   const addAddress = (newAddrData: Omit<Address, 'id'>) => {
     if (!currentUser) return;
+    const currentAddresses = currentUser.addresses || [];
     const newAddress: Address = {
       ...newAddrData,
       id: `addr-${Date.now()}`,
-      isDefault: currentUser.addresses.length === 0 ? true : newAddrData.isDefault || false,
+      isDefault: currentAddresses.length === 0 ? true : newAddrData.isDefault || false,
     };
 
-    let updatedList = [...currentUser.addresses];
+    let updatedList = [...currentAddresses];
     if (newAddress.isDefault) {
       updatedList = updatedList.map((a) => ({ ...a, isDefault: false }));
     }
@@ -672,7 +663,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   const updateAddress = (updated: Address) => {
     if (!currentUser) return;
-    let updatedList = currentUser.addresses.map((a) => {
+    let updatedList = (currentUser.addresses || []).map((a) => {
       if (a.id === updated.id) {
         return updated;
       }
@@ -692,7 +683,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   const deleteAddress = (addressId: string) => {
     if (!currentUser) return;
-    const filtered = currentUser.addresses.filter((a) => a.id !== addressId);
+    const filtered = (currentUser.addresses || []).filter((a) => a.id !== addressId);
     if (filtered.length > 0 && !filtered.some((a) => a.isDefault)) {
       filtered[0].isDefault = true;
     }
@@ -707,7 +698,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   const setDefaultAddress = (addressId: string) => {
     if (!currentUser) return;
-    const updated = currentUser.addresses.map((a) => ({
+    const updated = (currentUser.addresses || []).map((a) => ({
       ...a,
       isDefault: a.id === addressId,
     }));
